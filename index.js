@@ -26,7 +26,6 @@ const generateToken = async (req, res, next) => {
             {
                 headers: {
                     Authorization: `Basic ${auth}`,
-                    // Custom headers to prevent Incapsula WAF blocking
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Accept': 'application/json',
                     'Content-Type': 'application/json'
@@ -52,15 +51,36 @@ app.get('/', (req, res) => {
 
 // STK Push Route
 app.post('/stkpush', generateToken, async (req, res) => {
-    const { amount, phoneNumber } = req.body;
+    let { amount, phoneNumber, phone } = req.body;
+
+    let rawPhone = phoneNumber || phone;
+    if (!rawPhone) {
+        return res.status(400).json({ error: 'Phone number is required.' });
+    }
+
+    // Format phone number to strictly match 2547XXXXXXXX or 2541XXXXXXXX
+    let formattedPhone = rawPhone.toString().trim().replace(/[^0-9]/g, '');
+    if (formattedPhone.startsWith('0')) {
+        formattedPhone = '254' + formattedPhone.slice(1);
+    } else if (formattedPhone.startsWith('+254')) {
+        formattedPhone = formattedPhone.slice(1);
+    }
 
     const businessShortCode = process.env.BUSINESS_SHORT_CODE;
     const passkey = process.env.PASSKEY;
-    const appUrl = process.env.APP_URL;
+    
+    // Clean APP_URL to avoid double slashes and ensure HTTPS protocol
+    let appUrl = process.env.APP_URL ? process.env.APP_URL.trim().replace(/\/+$/, '') : '';
+    if (appUrl && !appUrl.startsWith('https://')) {
+        appUrl = `https://${appUrl.replace(/^http:\/\//, '')}`;
+    }
 
     if (!businessShortCode || !passkey || !appUrl) {
         return res.status(500).json({ error: 'Missing configuration variables (BUSINESS_SHORT_CODE, PASSKEY, or APP_URL).' });
     }
+
+    const callbackUrl = `${appUrl}/callback`;
+    console.log(`Sending CallBackURL to Daraja: ${callbackUrl}`);
 
     const timestamp = moment().format('YYYYMMDDHHmmss');
     const password = Buffer.from(businessShortCode + passkey + timestamp).toString('base64');
@@ -74,10 +94,10 @@ app.post('/stkpush', generateToken, async (req, res) => {
                 Timestamp: timestamp,
                 TransactionType: "CustomerPayBillOnline",
                 Amount: amount,
-                PartyA: phoneNumber,
+                PartyA: formattedPhone,
                 PartyB: businessShortCode,
-                PhoneNumber: phoneNumber,
-                CallBackURL: `${appUrl}/callback`,
+                PhoneNumber: formattedPhone,
+                CallBackURL: callbackUrl,
                 AccountReference: "Pick and Drop",
                 TransactionDesc: "Logistics Payment"
             },
@@ -103,13 +123,14 @@ app.post('/callback', (req, res) => {
     console.log('--- M-Pesa Callback Received ---');
     console.log(JSON.stringify(req.body, null, 2));
 
-    const callbackData = req.body.Body.stkCallback;
+    const callbackData = req.body?.Body?.stkCallback;
 
-    if (callbackData.ResultCode === 0) {
-        console.log('Payment Successful!');
-        // Process successful payment logic here
-    } else {
-        console.log(`Payment Failed: ${callbackData.ResultDesc}`);
+    if (callbackData) {
+        if (callbackData.ResultCode === 0) {
+            console.log('Payment Successful!');
+        } else {
+            console.log(`Payment Failed: ${callbackData.ResultDesc}`);
+        }
     }
 
     res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
