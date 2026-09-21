@@ -9,13 +9,20 @@ app.use(express.urlencoded({ extended: true }));
 
 const PORT = process.env.PORT || 3000;
 
+// Standard headers to bypass Safaricom Incapsula WAF blocks
+const standardHeaders = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'application/json',
+    'Content-Type': 'application/json'
+};
+
 // Middleware to generate Daraja OAuth Token
 const generateToken = async (req, res, next) => {
     const consumerKey = process.env.CONSUMER_KEY;
     const consumerSecret = process.env.CONSUMER_SECRET;
 
     if (!consumerKey || !consumerSecret) {
-        return res.status(500).json({ error: 'Consumer Key or Consumer Secret is missing from environment variables.' });
+        return res.status(500).json({ error: 'CONSUMER_KEY or CONSUMER_SECRET is missing.' });
     }
 
     const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64');
@@ -26,9 +33,7 @@ const generateToken = async (req, res, next) => {
             {
                 headers: {
                     Authorization: `Basic ${auth}`,
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
+                    ...standardHeaders
                 }
             }
         );
@@ -44,7 +49,7 @@ const generateToken = async (req, res, next) => {
     }
 };
 
-// Root / Health Check Route
+// Root check route
 app.get('/', (req, res) => {
     res.send('M-Pesa Express Server is running!');
 });
@@ -69,18 +74,18 @@ app.post('/stkpush', generateToken, async (req, res) => {
     const businessShortCode = process.env.BUSINESS_SHORT_CODE;
     const passkey = process.env.PASSKEY;
     
-    // Clean APP_URL to avoid double slashes and ensure HTTPS protocol
-    let appUrl = process.env.APP_URL ? process.env.APP_URL.trim().replace(/\/+$/, '') : '';
-    if (appUrl && !appUrl.startsWith('https://')) {
-        appUrl = `https://${appUrl.replace(/^http:\/\//, '')}`;
+    // Clean APP_URL to enforce HTTPS and eliminate trailing slashes
+    let rawAppUrl = (process.env.APP_URL || '').trim();
+    if (!rawAppUrl) {
+        return res.status(500).json({ error: 'APP_URL variable is not defined.' });
     }
 
-    if (!businessShortCode || !passkey || !appUrl) {
-        return res.status(500).json({ error: 'Missing configuration variables (BUSINESS_SHORT_CODE, PASSKEY, or APP_URL).' });
-    }
+    // Strip http:// or https:// to rebuild cleanly
+    let cleanDomain = rawAppUrl.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    const callbackUrl = `https://${cleanDomain}/callback`;
 
-    const callbackUrl = `${appUrl}/callback`;
     console.log(`Sending CallBackURL to Daraja: ${callbackUrl}`);
+    console.log(`Sending Target Phone to Daraja: ${formattedPhone}`);
 
     const timestamp = moment().format('YYYYMMDDHHmmss');
     const password = Buffer.from(businessShortCode + passkey + timestamp).toString('base64');
@@ -104,9 +109,7 @@ app.post('/stkpush', generateToken, async (req, res) => {
             {
                 headers: {
                     Authorization: `Bearer ${req.token}`,
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
+                    ...standardHeaders
                 }
             }
         );
@@ -122,16 +125,6 @@ app.post('/stkpush', generateToken, async (req, res) => {
 app.post('/callback', (req, res) => {
     console.log('--- M-Pesa Callback Received ---');
     console.log(JSON.stringify(req.body, null, 2));
-
-    const callbackData = req.body?.Body?.stkCallback;
-
-    if (callbackData) {
-        if (callbackData.ResultCode === 0) {
-            console.log('Payment Successful!');
-        } else {
-            console.log(`Payment Failed: ${callbackData.ResultDesc}`);
-        }
-    }
 
     res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
 });
